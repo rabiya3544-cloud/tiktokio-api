@@ -103,74 +103,90 @@ function pickAction(req) {
 
 /* ---------------- action: html ---------------- */
 
+const TKWM_UPSTREAM = "https://www.tikwm.com/api/";
+
 async function handleHtml(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed for action=html (use POST)" });
   }
 
-  // Accept { url } or { q } or { link } from the client.
-  // tiktokio expects form-encoded `q=<url>&lang=en`, not JSON.
   const body = req.body || {};
   const targetUrl = body.url || body.q || body.link;
-  if (!targetUrl) {
-    return res.status(400).json({ error: "Missing url" });
-  }
+  if (!targetUrl) return res.status(400).json({ error: "Missing url" });
 
   try {
     const form = new URLSearchParams();
-    form.set("q", targetUrl);
-    form.set("lang", "en");
+    form.set("url", targetUrl);
+    form.set("hd", "1");
 
-    const upstream = await fetch(TKIO_UPSTREAM, {
+    const upstream = await fetch(TKWM_UPSTREAM, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-          "AppleWebKit/537.36 (KHTML, like Gecko) " +
-          "Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://tiktokio.com/",
-        "Origin":  "https://tiktokio.com",
-        "Accept":  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Content-Type":  "application/x-www-form-urlencoded",
+        "User-Agent":    BROWSER_UA,
+        "Accept":        "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Referer":       "https://www.tikwm.com/",
+        "Origin":        "https://www.tikwm.com",
       },
       body: form.toString(),
       redirect: "follow",
     });
 
-    const html = await upstream.text();
+    const text = await upstream.text();
+    console.log("[tikwm] status=%d preview=%s",
+      upstream.status, text.slice(0, 200).replace(/\s+/g, " "));
 
-    // Helpful for debugging — shows up in Vercel → Logs.
-    console.log(
-      "[tiktokio] status=%d len=%d preview=%s",
-      upstream.status, html.length, html.slice(0, 120).replace(/\s+/g, " ")
-    );
-
-    // If upstream failed, pass the diagnostic body back as JSON
-    // so the frontend shows something actionable (not just "ok").
-    if (!upstream.ok) {
-      const plain = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      return res.status(upstream.status).json({
-        error: "Upstream rejected the request",
-        status: upstream.status,
-        detail: plain.slice(0, 200) || "(empty body)",
+    let payload;
+    try { payload = JSON.parse(text); }
+    catch {
+      return res.status(502).json({
+        error: "Non-JSON response from resolver",
+        preview: text.slice(0, 200),
       });
     }
 
-    const clean = html
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<script[\s\S]*?<\/script>/gi, "");
+    if (payload.code !== 0 || !payload.data) {
+      return res.status(400).json({
+        error: "Resolver could not parse link",
+        detail: payload.msg || "(no message)",
+      });
+    }
 
-    res
-      .status(upstream.status)
+    const d = payload.data;
+    const rows = [];
+    const add = (href, label, kind) => {
+      if (!href) return;
+      const abs = href.startsWith("http") ? href : "https://www.tikwm.com" + href;
+      rows.push(
+        `<a href="${escapeAttr(abs)}" data-kind="${escapeAttr(kind)}"` +
+        ` data-label="${escapeAttr(label)}">${escapeHtml(label)}</a>`
+      );
+    };
+
+    add(d.hdplay || d.play, "Video · no watermark (HD)", "video");
+    if (d.wmplay) add(d.wmplay, "Video · with watermark", "video");
+    add(d.music || d.audio, "Audio (MP3)", "audio");
+    add(d.cover, "Cover image", "image");
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "No media URLs in resolver response" });
+    }
+
+    res.status(200)
       .setHeader("Content-Type", "text/html; charset=utf-8")
-      .send(clean);
+      .send(`<ul>${rows.join("")}</ul>`);
   } catch (err) {
-    console.error("html proxy error:", err);
+    console.error("tikwm resolver error:", err);
     res.status(502).json({ error: "Upstream request failed" });
   }
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
 /* ---------------- action: size ---------------- */
 
 async function handleSize(req, res) {
