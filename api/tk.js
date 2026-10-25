@@ -8,57 +8,39 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  // 1. Validate the incoming body
-  const incoming = req.body;
-  if (!incoming || typeof incoming !== "object" || !incoming.url) {
-    return res.status(400).json({ error: "Missing 'url' in request body" });
-  }
-
-  // 2. Strip tracking parameters (?_r=1&_t=...) which tiktokio rejects
   let cleanUrl;
   try {
-    const u = new URL(incoming.url);
-    u.search = ""; 
+    const u = new URL(req.body?.url);
+    u.search = "";
     cleanUrl = u.toString();
   } catch {
-    return res.status(400).json({ error: "Invalid URL format" });
+    return res.status(400).json({ error: "Invalid URL", received: req.body });
   }
 
   try {
-    // 3. Forward only the cleaned URL
     const upstream = await fetch(UPSTREAM, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // A browser-like UA avoids some upstream 403s
-        "User-Agent": "Mozilla/5.0 (compatible; MyApp/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "text/html,application/json",
+        "Referer": "https://tiktokio.com/",
+        "Origin": "https://tiktokio.com",
       },
       body: JSON.stringify({ url: cleanUrl }),
     });
 
-    const html = await upstream.text();
+    const body = await upstream.text();
 
-    // 4. If upstream fails, do not forward its (often empty) error page
-    if (!upstream.ok) {
-      console.error("Upstream error:", upstream.status, html.slice(0, 200));
-      return res.status(502).json({
-        error: "Upstream request failed",
-        status: upstream.status,
-        detail: html.slice(0, 200), // helps you debug future 400s
-      });
-    }
-
-    // 5. Clean and return the HTML snippet
-    const clean = html
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<script[\s\S]*?<\/script>/gi, "");
-
-    res
-      .setHeader("Content-Type", "text/html; charset=utf-8")
-      .status(200)
-      .send(clean);
+    // DEBUG: return everything we know, as JSON
+    return res.status(200).json({
+      sentUrl: cleanUrl,
+      upstreamStatus: upstream.status,
+      upstreamHeaders: Object.fromEntries(upstream.headers),
+      upstreamBodyLength: body.length,
+      upstreamBodyPreview: body.slice(0, 1000),
+    });
   } catch (err) {
-    console.error("Proxy error:", err);
-    res.status(502).json({ error: "Upstream request failed" });
+    return res.status(500).json({ error: String(err), message: err?.message });
   }
 }
