@@ -23,6 +23,7 @@ const ALLOWED_HOSTS = [
   /\.tiktokcdn-eu\.com$/i,
   /\.tiktokv\.com$/i,
   /\.tiktokv\.us$/i,
+  /(^|\.)tikwm\.com$/i,          // NEW — tikwm-hosted media
 ];
 
 const PROBE_TIMEOUT_MS    = 8000;
